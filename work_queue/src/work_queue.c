@@ -111,8 +111,6 @@ struct work_queue {
 
 	struct list    *workers_with_available_results;
 	
-	struct hash_table *used_workers; //used for round-robin scheduling
-
 	int64_t total_tasks_submitted;
 	int64_t total_tasks_complete;
 	int64_t total_bytes_sent;
@@ -2047,33 +2045,6 @@ static struct work_queue_worker *find_worker_by_fcfs(struct work_queue *q, struc
 	return NULL;
 }
 
-static struct work_queue_worker *find_worker_by_roundrobin(struct work_queue *q, struct work_queue_task *t)
-{
-	char *key;
-	struct work_queue_worker *w;
-	
-	//if we have used all workers, we are done with a round. 
-	//so, clear the used workers to start a new round. 
-	if(hash_table_size(q->worker_table) == hash_table_size(q->used_workers)) {
-		hash_table_clear(q->used_workers);
-	}
-	
-	hash_table_firstkey(q->worker_table);
-	while(hash_table_nextkey(q->worker_table, &key, (void**)&w)) {
-		if (hash_table_lookup(q->used_workers, key)) {
-			debug(D_WQ, "Ignoring worker %s (%s) since it has already been used in this round.", w->hostname, w->addrport);
-			continue;
-		}
-		if( check_worker_against_task(q, w, t) ) {
-			hash_table_insert(q->used_workers, w->hashkey, w);
-			return w;
-		}
-	}
-
-	//here because there are still unused workers but they don't fit the task. Just use FCFS. 
-	return find_worker_by_fcfs(q, t);
-}
-
 static struct work_queue_worker *find_worker_by_random(struct work_queue *q, struct work_queue_task *t)
 {
 	char *key;
@@ -2148,8 +2119,6 @@ static struct work_queue_worker *find_best_worker(struct work_queue *q, struct w
 		return find_worker_by_time(q, t);
 	case WORK_QUEUE_SCHEDULE_RAND:
 		return find_worker_by_random(q, t);
-	case WORK_QUEUE_SCHEDULE_ROUND:
-		return find_worker_by_roundrobin(q, t);
 	case WORK_QUEUE_SCHEDULE_FCFS:
 	default:
 		return find_worker_by_fcfs(q, t);
@@ -2955,7 +2924,6 @@ struct work_queue *work_queue_create(int port)
 	q->worker_task_map = itable_create(0);
 	
 	q->workers_with_available_results = list_create();
-	q->used_workers = hash_table_create(0, 0);
 	
 	// The poll table is initially null, and will be created
 	// (and resized) as needed by build_poll_table.
@@ -3168,7 +3136,6 @@ void work_queue_delete(struct work_queue *q)
 		list_delete(q->complete_list);
 
 		list_delete(q->workers_with_available_results);
-		hash_table_delete(q->used_workers);
 		
 		list_free(q->task_reports);
 		list_delete(q->task_reports);
